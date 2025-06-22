@@ -9,8 +9,19 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
+const allowedOrigins = [
+  'https://catkfolio.netlify.app',
+  'https://drey100.github.io'
+];
+
 app.use(cors({
-  origin: 'https://catkfolio.netlify.app , https://drey100.github.io/Mon-portfolio/',// Remplace avec l’URL réelle de ton frontend
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST'],
   credentials: false
 }));
