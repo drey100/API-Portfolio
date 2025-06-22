@@ -9,7 +9,11 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
-app.use(cors({ origin: '*' }));
+app.use(cors({
+  origin: 'https://catkfolio.netlify.app , https://drey100.github.io/Mon-portfolio/',// Remplace avec l’URL réelle de ton frontend
+  methods: ['GET', 'POST'],
+  credentials: false
+}));
 
 app.use(bodyParser.json());
 
