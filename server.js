@@ -1,103 +1,144 @@
 require('dotenv').config();
-const express = require('express');
+const express    = require('express');
 const nodemailer = require('nodemailer');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-const mongoose = require('mongoose');
+const cors       = require('cors');
+const mongoose   = require('mongoose');
+const path       = require('path');
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 5000;
 
+// ─────────────────────────────────────────
 // Middleware
-const allowedOrigins = [
-  'https://catkfolio.netlify.app',
-  'https://drey100.github.io'
-];
+// ─────────────────────────────────────────
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  methods: ['GET', 'POST'],
-  credentials: false
-}));
+// ─────────────────────────────────────────
+// Fichiers statiques
+// server.js est dans backend/
+// les HTML sont dans ../public/
+// ─────────────────────────────────────────
+const publicDir = path.join(__dirname, '..', 'public');
+app.use(express.static(publicDir));
 
-app.use(bodyParser.json());
-
-// Connexion à MongoDB avec Mongoose
-mongoose.connect(process.env.DB_URI)
-  .then(() => console.log('MongoDB connecté !'))
-  .catch((err) => console.error('Erreur de connexion MongoDB:', err));
-
-// Définition d'un schema pour stocker les messages de contact
-const messageSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, required: true },
-  message: { type: String, required: true },
-  date: { type: Date, default: Date.now }
-});
-
-// Création du modèle
-const Message = mongoose.model('Message', messageSchema);
-
-// Route racine
 app.get('/', (req, res) => {
-  res.send('Bienvenue sur mon API backend pour le formulaire de contact !');
+  res.sendFile(path.join(publicDir, 'portfolio.html'));
 });
 
-// Transporteur SMTP Nodemailer
-const transporter = nodemailer.createTransport({
-  service: 'gmail', // ou autre service SMTP
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
+app.get('/dashboard', (req, res) => {
+  res.sendFile(path.join(publicDir, 'dashboard.html'));
 });
 
-// Route POST pour recevoir le formulaire
+// ─────────────────────────────────────────
+// MongoDB — OPTIONNEL
+// ─────────────────────────────────────────
+let Message = null;
+
+if (process.env.DB_URI) {
+  mongoose.connect(process.env.DB_URI)
+    .then(() => {
+      console.log('MongoDB connecte !');
+      const messageSchema = new mongoose.Schema({
+        name:    { type: String, required: true, trim: true },
+        email:   { type: String, required: true, trim: true, lowercase: true },
+        subject: { type: String, required: true, trim: true },
+        message: { type: String, required: true, trim: true },
+        date:    { type: Date, default: Date.now }
+      });
+      Message = mongoose.model('Message', messageSchema);
+    })
+    .catch((err) => {
+      console.warn('MongoDB non connecte :', err.message);
+    });
+} else {
+  console.warn('DB_URI absent - MongoDB desactive (facultatif).');
+}
+
+// ─────────────────────────────────────────
+// Nodemailer — OPTIONNEL
+// ─────────────────────────────────────────
+let transporter = null;
+
+if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+  transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+  });
+  console.log('Email configure pour :', process.env.EMAIL_USER);
+} else {
+  console.warn('EMAIL_USER/EMAIL_PASS absents - email desactive (facultatif).');
+}
+
+// ─────────────────────────────────────────
+// Route POST /contact
+// ─────────────────────────────────────────
 app.post('/contact', async (req, res) => {
-  const { name, email, message } = req.body;
+  const { name, email, subject, message } = req.body;
 
-  if (!name || !email || !message) {
+  if (!name || !email || !subject || !message) {
     return res.status(400).json({ error: 'Tous les champs sont obligatoires.' });
   }
 
-  try {
-    // Enregistrer le message dans la base MongoDB
-    const newMessage = new Message({ name, email, message });
-    await newMessage.save();
-
-    // Préparer l'email
-    const mailOptions = {
-      from: email,
-      to: process.env.EMAIL_USER,
-      subject: `Nouveau message de ${name} via le formulaire contact`,
-      text: message,
-      html: `
-        <p><strong>Nom:</strong> ${name}</p>
-        <p><strong>Email:</strong> ${email}</p>
-        <p><strong>Message:</strong><br/>${message.replace(/\n/g, '<br/>')}</p>
-      `,
-    };
-
-    // Envoyer l'email
-    transporter.sendMail(mailOptions, (error, info) => {
-      if (error) {
-        console.error(error);
-        return res.status(500).json({ error: "Erreur lors de l’envoi du mail." });
-      }
-      res.json({ message: 'Message envoyé et sauvegardé avec succès !' });
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Erreur serveur.' });
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ error: 'Adresse email invalide.' });
   }
+
+  const results = { saved: false, emailed: false };
+
+  // 1. Sauvegarde MongoDB
+  if (Message) {
+    try {
+      await new Message({ name, email, subject, message }).save();
+      results.saved = true;
+      console.log('Message de ' + name + ' sauvegarde en base.');
+    } catch (err) {
+      console.warn('Erreur MongoDB :', err.message);
+    }
+  }
+
+  // 2. Envoi email
+  if (transporter) {
+    try {
+      await transporter.sendMail({
+        from:    '"' + name + '" <' + process.env.EMAIL_USER + '>',
+        replyTo: email,
+        to:      process.env.EMAIL_USER,
+        subject: '[Portfolio] ' + subject + ' - message de ' + name,
+        text:    'Nom: ' + name + '\nEmail: ' + email + '\nSujet: ' + subject + '\n\nMessage:\n' + message,
+        html:    '<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;"><div style="background:#d4af64;padding:20px 30px;"><h2 style="color:#000;margin:0;">Nouveau message - Portfolio</h2></div><div style="padding:30px;"><p><strong>Nom :</strong> ' + name + '</p><p><strong>Email :</strong> ' + email + '</p><p><strong>Sujet :</strong> ' + subject + '</p><hr/><p>' + message.replace(/\n/g, '<br/>') + '</p></div></div>',
+      });
+      results.emailed = true;
+      console.log('Email envoye pour ' + name);
+    } catch (err) {
+      console.warn('Erreur email :', err.message);
+    }
+  }
+
+  return res.status(200).json({
+    message: 'Message recu avec succes !',
+    saved:   results.saved,
+    emailed: results.emailed,
+  });
 });
 
+// ─────────────────────────────────────────
+// Demarrage
+// ─────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`Serveur démarré sur le port ${PORT}`);
+  console.log('\n====================================');
+  console.log('  Serveur demarre !');
+  console.log('====================================');
+  console.log('  Portfolio  : http://localhost:' + PORT + '/');
+  console.log('  Dashboard  : http://localhost:' + PORT + '/dashboard');
+  console.log('  API        : http://localhost:' + PORT + '/contact');
+  console.log('------------------------------------');
+  console.log('  MongoDB : ' + (process.env.DB_URI     ? 'configure' : 'non configure'));
+  console.log('  Email   : ' + (process.env.EMAIL_USER ? 'configure' : 'non configure'));
+  console.log('====================================\n');
 });
